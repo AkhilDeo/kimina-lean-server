@@ -18,3 +18,5 @@ repl/
 
 # PostgreSQL data
 .data/
+
+mathlib4
