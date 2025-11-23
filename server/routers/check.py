@@ -2,6 +2,8 @@ import asyncio
 import json
 from typing import cast
 
+from dataclasses import dataclass
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from kimina_client import CheckRequest, Infotree, ReplResponse, Snippet
 from kimina_client.models import CheckResponse, CommandResponse, Pos
@@ -16,6 +18,58 @@ from ..repl import Repl
 from ..split import split_snippet
 
 router = APIRouter()
+
+
+@dataclass
+class Job:
+    snippets: list[Snippet]
+    timeout: float
+    debug: bool
+    reuse: bool
+    infotree: Infotree | None
+    future: asyncio.Future
+
+
+_queue: asyncio.Queue[Job] = asyncio.Queue()
+_workers: list[asyncio.Task] = []
+
+
+async def worker_loop(manager: Manager) -> None:
+    while True:
+        job = await _queue.get()
+        try:
+            results = await run_checks(
+                job.snippets,
+                job.timeout,
+                job.debug,
+                manager,
+                job.reuse,
+                job.infotree,
+            )
+            if not job.future.done():
+                job.future.set_result(results)
+        except Exception as e:
+            if not job.future.done():
+                job.future.set_exception(e)
+        finally:
+            _queue.task_done()
+
+
+async def start_background_workers(manager: Manager) -> None:
+    # Scale workers based on available REPLs to enable full utilization w/o overloading event loop w/ pending tasks
+    num_workers = max(manager.max_repls * 2, 4)
+    logger.info(f"Starting {num_workers} background check workers")
+    for _ in range(num_workers):
+        _workers.append(asyncio.create_task(worker_loop(manager)))
+
+
+async def stop_background_workers() -> None:
+    logger.info("Stopping background check workers")
+    for w in _workers:
+        w.cancel()
+    if _workers:
+        await asyncio.gather(*_workers, return_exceptions=True)
+    _workers.clear()
 
 
 def get_manager(request: Request) -> Manager:
@@ -213,22 +267,26 @@ async def check(
     manager: Manager = Depends(get_manager),
     _: str = Depends(require_key),
 ) -> CheckResponse:
-    task = asyncio.create_task(
-        run_checks(
-            request.snippets,
-            float(request.timeout),
-            request.debug,
-            manager,
-            request.reuse,
-            request.infotree,
-        )
+    # Create a future to receive the result from the worker
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    job = Job(
+        snippets=request.snippets,
+        timeout=float(request.timeout),
+        debug=request.debug,
+        reuse=request.reuse,
+        infotree=request.infotree,
+        future=future,
     )
 
-    while not task.done():
+    await _queue.put(job)
+
+    while not future.done():
         if await raw_request.is_disconnected():
-            task.cancel()
+            future.cancel()
             raise HTTPException(499, "Client disconnected")
         await asyncio.sleep(0.1)
 
-    results = await task
+    results = await future
     return CheckResponse(results=results)

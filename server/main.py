@@ -12,7 +12,11 @@ from .db import db
 from .logger import setup_logging
 from .manager import Manager
 from .routers.backward import router as backward_router
-from .routers.check import router as check_router
+from .routers.check import (
+    router as check_router,
+    start_background_workers,
+    stop_background_workers,
+)
 from .routers.health import router as health_router
 from .settings import Environment, Settings
 
@@ -50,6 +54,9 @@ def create_app(settings: Settings) -> FastAPI:
         app.state.manager = manager
         await app.state.manager.initialize_repls()
 
+        # Start the background workers for the check endpoint
+        await start_background_workers(manager)
+
         if settings.environment == Environment.dev:
             threading.Timer(
                 0.1,
@@ -68,6 +75,9 @@ def create_app(settings: Settings) -> FastAPI:
             ).start()
 
         yield
+
+        # Stop the background workers
+        await stop_background_workers()
 
         await app.state.manager.cleanup()
         await db.disconnect()

@@ -195,7 +195,10 @@ class Manager:
             return None
 
         try:
-            await repl.start()
+            # Serialize REPL startup to prevent resource exhaustion and build conflicts
+            async with self._start_sem:
+                if not repl.is_running:  # Double check after lock
+                    await repl.start()
         except Exception as e:
             logger.exception("Failed to start REPL: %s", e)
             raise ReplError("Failed to start REPL") from e

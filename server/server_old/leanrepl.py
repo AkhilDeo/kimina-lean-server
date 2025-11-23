@@ -155,7 +155,7 @@ class LeanREPL:
             text=True,
             bufsize=1,  # Line-buffered
             cwd=path_to_mathlib,  # Set the working directory to 'mathlib4'
-            env=os.environ,  # Inherit environment variables
+            env=dict(os.environ),  # Inherit environment variables
             preexec_fn=preexec_fn,
         )
 
